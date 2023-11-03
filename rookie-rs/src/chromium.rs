@@ -1,7 +1,6 @@
 use std::{path::PathBuf, error::Error};
 use crate::{enums::*, date};
 use crate::sqlite;
-use log::warn;
 
 cfg_if::cfg_if! {
     if #[cfg(target_os = "windows")] {
@@ -44,7 +43,7 @@ fn get_keys(config: &BrowserConfig) -> Result<Vec<Vec<u8>>, Box<dyn std::error::
     let iterations = 1;
 
     let mut keys: Vec<Vec<u8>> = vec![];
-    
+
 
     cfg_if::cfg_if! {
         if #[cfg(target_os = "linux")] {
@@ -75,11 +74,11 @@ fn get_keys(config: &BrowserConfig) -> Result<Vec<Vec<u8>>, Box<dyn std::error::
             let key = create_pbkdf2_key("", salt, iterations);
             keys.push(key);
 
-            
+
         }
     }
     Ok(keys)
-    
+
 }
 
 
@@ -121,7 +120,7 @@ fn decrypt_encrypted_value(value: String, encrypted_value: &[u8], keys: Vec<Vec<
         return Ok(value);
     }
     use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
-    
+
     type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
 
 
@@ -137,16 +136,16 @@ fn decrypt_encrypted_value(value: String, encrypted_value: &[u8], keys: Vec<Vec<
         key_array.copy_from_slice(&key[..16]);
         let cipher = Aes128CbcDec::new(&key_array.into(), &iv.into());
         let mut cloned_encrypted_value: Vec<u8> = encrypted_value.to_vec();
-        
+
         if let Ok(plaintext) = cipher.decrypt_padded_mut::<Pkcs7>(&mut cloned_encrypted_value) {
-            
+
             let decoded = String::from_utf8(plaintext.to_vec());
             match decoded {
                 Ok(decoded) => {
                     return Ok(decoded);
                 }
                 Err(_) => {
-                    warn!("Error in decode decrypt value with utf8");
+                    eprintln!("[WARN] error in decode decrypt value with utf8");
                     return Ok("".into());
                 }
             }
@@ -157,11 +156,11 @@ fn decrypt_encrypted_value(value: String, encrypted_value: &[u8], keys: Vec<Vec<
 }
 
 
-fn query_cookies(keys: Vec<Vec<u8>>, db_path: PathBuf, domains: Option<Vec<&str>>) -> Result<Vec<Cookie>, Box<dyn Error>> {    
+fn query_cookies(keys: Vec<Vec<u8>>, db_path: PathBuf, domains: Option<Vec<&str>>) -> Result<Vec<Cookie>, Box<dyn Error>> {
     cfg_if::cfg_if! {
         if #[cfg(target_os = "windows")] {
             let db_path_str = db_path.to_str().ok_or("Cant convert db path to str")?;
-            warn!("Unlocking chrome database, it may take a while (sometimes up to minute)");
+            eprintln!("[WARN] Unlocking chrome database, it may take a while (sometimes up to minute)");
             unsafe {winapi::release_file_lock(db_path_str);}
         }
     }
@@ -172,7 +171,7 @@ fn query_cookies(keys: Vec<Vec<u8>>, db_path: PathBuf, domains: Option<Vec<&str>
         let domain_queries: Vec<String> = domains.iter()
             .map(|domain| format!("host_key LIKE '%{}%'", domain))
             .collect();
-        
+
         if !domain_queries.is_empty() {
             let joined_queries = domain_queries.join(" OR ");
             query += &format!("WHERE ({})", joined_queries);
@@ -180,7 +179,7 @@ fn query_cookies(keys: Vec<Vec<u8>>, db_path: PathBuf, domains: Option<Vec<&str>
     }
     query += ";";
 
-    
+
 
     let mut cookies: Vec<Cookie> = vec![];
     let mut stmt = connection.prepare(query.as_str())?;
@@ -194,12 +193,13 @@ fn query_cookies(keys: Vec<Vec<u8>>, db_path: PathBuf, domains: Option<Vec<&str>
         let expires: u64 = row.get(3)?;
         let expires = date::chromium_timestamp(expires);
         let name: String = row.get(4)?;
-        
+
         let value: String = row.get(5)?;
         let encrypted_value: Vec<u8> = row.get(6)?;
-        let decrypted_value = decrypt_encrypted_value(value, &encrypted_value, keys.to_owned())?;
+        // let decrypted_value = decrypt_encrypted_value(value, &encrypted_value, keys.to_owned())?;
+        let decrypted_value = convert_to_string(&encrypted_value);
         let http_only: bool = row.get(7)?;
-        
+
         let same_site: i64 = row.get(8)?;
         let cookie = Cookie {
             domain: host_key.to_string(),
@@ -216,6 +216,10 @@ fn query_cookies(keys: Vec<Vec<u8>>, db_path: PathBuf, domains: Option<Vec<&str>
     Ok(cookies)
 }
 
+
+fn convert_to_string(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).to_string()
+}
 
 
 #[cfg(target_os = "windows")]
